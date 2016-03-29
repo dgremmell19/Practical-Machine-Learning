@@ -1,0 +1,164 @@
+---
+title: "Predicting Quality of Workouts"
+author: "Daniel Gremmell"
+date: "March 25, 2016"
+output: md_document
+variant: markdown_github
+---
+
+#Executive Summary
+
+In the physical movement world, technologies such as Jawbone and FitBit provide 
+large amounts of data on personal movement and exercise. This writing takes data from accelerometers and builds a model to quantify how well an exercise is being performed. This model then takes data collected from a device an provides feedback on how well the exercise is performed. This is a classification problem with grades being given on an A,B,C,D,F scale, with A being the highest. The model that ends up being used is the random forest model. This writing will show how the random forest model was selected. 
+
+##Importing Data and Set Up
+First, the packages to be used need to be loaded:
+```{r, echo = TRUE, message = FALSE}
+#Load Packages
+library(caret)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(randomForest)
+library(gbm)
+library(adabag)
+```
+
+
+Second, the data to use will be downloaded:
+
+```{r, echo = TRUE, cache = TRUE}
+#Load Data
+train <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", na.strings = c("NA","#DIV/0!",""))
+```
+
+##Preprocessing
+
+The data now needs to be prepared in order to build the machine learning model.The type of model that will be built is for a classification problem since we are grading with discrete variables and not trying to come up with a continuous answer. First will be to partition the data into training and test sets:
+```{r, echo = TRUE, cache = TRUE}
+train_model <- createDataPartition(train$classe, p = 0.60, list = FALSE)
+training_set <- train[train_model,]
+test_set <- train[-train_model,]
+```
+
+Before proceeding, a quick str print will help show some important information about this data set.
+```{r, echo = TRUE}
+str(training_set)
+```
+
+It can be seen that the first few columns are simply information related to the observations. This is important to note. The next thing to notice is there are a lot of columns which contain a lot of NA's. A big part of solving a classification problem such as this will be to ensure there is no missing or NA's in the data. Before doing that however, the Nearzero function in the Caret package can be useful to help identify columns with repetitive values or minimal variation. These columns do not help train the model and need to be identified and eliminated. 
+```{r, echo = TRUE, cache = TRUE}
+#Identify columns with zero variance to remove
+nearzero <- nearZeroVar(training_set)
+training_set2 <- training_set[,-nearzero]
+```
+
+There were almost 40 columns eliminated with near zero. A quick summary print will show some more details of the remaining columns.
+```{r, echo = TRUE, cache = TRUE}
+summary(training_set2)
+```
+
+Reviewing this shows there are still quite a few columns with a large majority of the data being NA's. Since there is such a large amount of NA's in these columns, the columns will simply be removed. If there were less, then they could be imputed, but there are simply too many that it would not be meaningful. Also, the first six columns will be removed since they are only identity columns. 
+```{r, echo = TRUE, cache = TRUE}
+#Remove columns related to identity
+training_set2 <- training_set2[,-c(1:6)]
+#Identify columns that are mainly NA values and remove
+NA_sums <- colSums(is.na(training_set2))
+NA_cols <- NA_sums > 0
+training_set3 <- training_set2[,NA_cols == FALSE]
+```
+
+This leaves the training set with `r length(names(training_set3))` columns. A quick summary print will validate all columns are meaningful. 
+```{r, echo = TRUE, cache = TRUE}
+summary(training_set3)
+```
+
+Last, the test set need to match the columns of the training set. 
+```{r, echo = TRUE, cache = TRUE}
+#Remove columns not used from test set
+col_names <- names(training_set3)
+test_set2 <- test_set[,col_names]
+```
+
+Since this is a classification problem and not a regression problem, there is no need to remove highly correlated variables. 
+
+##Model Selection, Evaluation and Training
+With this type of problem, there are multiple models that can be built. A couple of things to keep in mind: first, some of these models can take a long time to run depending on the PC speed. Next, the goal is to maximize the accuracy, but not result in an overfit of the data. From the beginning, the random forest is usually the best model for this type of problem, however this must be proven.
+
+First up will be to test the K-Nearest Neighbors model. This is a very simple model that simply reviews each class and predicts based on similar parameters from the training set. This was not done with caret because of performance issues. 
+```{r, echo = TRUE, cache = TRUE}
+training_set6 <- training_set3[,1:(length(names(training_set3))-1)]
+test_set6 <- test_set2[,1:(length(names(training_set3))-1)]
+training_label <- training_set3[,length(names(training_set3))]
+test_label <- test_set2[,length(names(training_set3))]
+knn_train2 <- knn3Train(train = training_set6,test = test_set6,cl = training_label, k = 1)
+knn_accuracy <- confusionMatrix(knn_train2,test_label)
+knn_accuracy
+```
+
+The simply model has produced an accuracy of `r  round(knn_accuracy$overall["Accuracy"]*100,2)` and a kappa of `r round(knn_accuracy$overall["Kappa"]*100,2)`. This is not bad considering the simple nature of the KNN model. However, with a more complicated model, both metrics should improve. 
+
+Next, the gradient boosting model will be tested. Once again, the adabag package is used instead of the caret package because of performance issues. 
+```{r, echo = TRUE, cache = TRUE}
+set.seed(3456)
+gbm_train2 <- boosting(classe ~.,data = training_set3)
+gbm_predict <- predict(gbm_train2,training_set3)
+gbm_accuracy <- confusionMatrix(gbm_predict$class,training_set3$classe)
+gbm_accuracy
+```
+
+Surprisingly, this model is inferior to the KNN model with an accuracy of `r  round(gbm_accuracy$overall["Accuracy"]*100,2)` and a kappa of `r round(gbm_accuracy$overall["Kappa"]*100,2)`. So bootstrapping is not better in this situation. It is also important to note that the gbm algorithm was ran again with cross validation of 10. This method is not shown here because it took multiple hours to run. When finished, the accuracy and kappa were slightly inferior to the bootstrapping method. 
+
+Last, the random forest model will be evaluated. Some major advantages are the random forest model is pretty immune to overfit and bias.  
+```{r, echo = TRUE, cache = TRUE}
+#Train random forest model
+set.seed(3456)
+model <- randomForest(classe ~ .,data = training_set3)
+model_predictions <- predict(model,newdata = training_set3,type = "response")
+model_accuracy <- confusionMatrix(model_predictions,training_set3$classe)
+model
+```
+The print of the model shows an out of the bag error rate of `r round((sum(model$confusion)-sum(diag(model$confusion)))/sum(model$confusion)*100,2)` which is less than 1%. When the predictions are made against the training set, the following confusion matrix is generated:
+```{r, echo = TRUE}
+model_accuracy
+```
+This shows an accuracy of `r  model_accuracy$overall["Accuracy"]*100` and a kappa of `r model_accuracy$overall["Kappa"]*100`. With these numbers, the random forest model is the model to use for this data set. 
+
+##Tuning the Model
+Now that the random forest model has been selected, the model needs to be tuned for maximum accuracy and kappa. First, a plot of the model shows the point at which the trees are not effective at reducing the error. 
+```{r, echo = TRUE}
+plot(model)
+```
+
+Next, there are two parameters to tune. First is the number of trees and second is the mtry. The number of trees will help determine how many trees to use to stabilize the error but avoid overfitting. The mtry will help to minimize the OOBerror. 
+```{r, echo = TRUE, cache = TRUE}
+#Tune random forest model
+ntrees <- which.min(model$err.rate[,1])
+tune_rf <- tuneRF(training_set3[,-53],training_set3[,53])
+rf_mtry <- tune_rf[tune_rf[,2]==min(tune_rf),1]
+```
+
+The number of trees to use is `r ntrees` and the mtry setting to use is `r tune_rf[tune_rf[,2]==min(tune_rf),1]`, as seen by the graph produced by tune_rf. 
+
+Next, the tuned random forest model will be fit and evaluated. 
+```{r, echo = TRUE, cache = TRUE}
+#Train tuned random forest model
+set.seed(3456)
+model_n <- randomForest(classe ~ .,data = training_set3, ntree = ntrees, mtry = rf_mtry)
+model_n
+```
+
+It can be seen that the OOB error has been reduced to `r round((sum(model$confusion)-sum(diag(model$confusion)))/sum(model$confusion)*100,2)` from `r round((sum(model_n$confusion)-sum(diag(model_n$confusion)))/sum(model_n$confusion)*100,2)`. This is a sufficient reduction and cannot really be optimized further.
+
+##Evaluating the Model on the Test Set
+Now that the final model is built, the evaluation can be done on the test set split from the original data. 
+```{r, echo = TRUE, cache = TRUE}
+predictions <- predict(model_n,newdata = test_set2,type = "response")
+accuracy <- confusionMatrix(predictions,test_set2$classe)
+accuracy
+```
+
+The results are surely impressive. The accuracy came out to be `r  round(accuracy$overall["Accuracy"]*100,2)` and the kappa `r  round(accuracy$overall["Kappa"]*100,2)`. The confusion matrix shows relatively few mistakes made by the prediction model. These are results that can be accepted. 
+
+##Conclusion
+In conclusion, evidence shows the random forest model is the model to use here. It had a small error rate and the accuracy and kappa ratings carried over to the test set predictions. It is now possible to determine if a workout is being performed properly with a high level of accuracy. 
